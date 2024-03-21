@@ -54,8 +54,17 @@
    = Printing Took: 1.7668419s
    = Total Took: 2m49.3090915s
    ```
-
-
+7. Batching lines is awesome
+   ```
+   = Scanning Took: 57.2182617s
+   - Reading: 38.2835403s
+   - Process: 14.7992593s
+   - Waiting: 0s
+   = Sorting Took: 6.9824ms
+   = Printing Took: 1.7083713s
+   = Total Took: 58.9396155s
+   ```
+8. 
 ## Research
 
 1. Refresher on how to read file line by line :P

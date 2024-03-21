@@ -23,8 +23,9 @@
       ```
       > building saved 2s. not worth it at this point.
 4. low effort: try to use stringsBuilder for printing
-   > does it really help? is it within fluctuation range?  
-   > What if we try changing the map to pointers? looks better :)
+   1. does it really help? is it within fluctuation range?
+   2. What if we try changing the map to pointers?
+      1. looks better :)
    ```
    = Scanning Took: 3m2.9752375s
      - Reading: 35.2557324s
@@ -33,7 +34,15 @@
    = Printing Took: 1.7957342s
    = Total Took: 3m4.7802828s
    ```
-5. Custom Split-Parsing and Int cheat
+5. Custom Split-Parsing + Int cheat + "direct" print
+   ```
+   = Scanning Took: 2m27.5432231s
+   - Reading: 33.6752093s
+   - Processing: 1m49.5673342s
+   = Sorting Took: 7.5124ms
+   = Printing Took: 1.8333401s
+   = Total Took: 2m29.3840756s
+   ```
 
 ## Research
 

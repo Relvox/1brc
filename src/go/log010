@@ -1,6 +1,8 @@
-2024/03/21 12:19:36 = Scanning Took: 17.886096s
-2024/03/21 12:19:36   - Reading: 3.4726342s
-2024/03/21 12:19:36   - Processing: 14.0986182s
-2024/03/21 12:19:36 = Sorting Took: 11.9985ms
-2024/03/21 12:19:36 = Printing Took: 1.7411523s
-2024/03/21 12:19:36 = Total Took: 19.6392468s
+2024/03/21 13:20:24 
+= Scanning Took: 13.3643639s
+  - Reading: 3.2477023s
+  - Processing: 9.7536511s
+= Sorting Took: 8.9991ms
+= Printing Took: 1.7554126s
+= Total Took: 15.1287756s
+ 	

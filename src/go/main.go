@@ -14,7 +14,7 @@ import (
 )
 
 type CityData struct {
-	Min, Sum, Max float64
+	Min, Sum, Max int
 	Count         int
 }
 
@@ -45,11 +45,11 @@ func main() {
 		scanner = bufio.NewScanner(file)
 		cities  = make(map[string]*CityData)
 
-		line  string
-		data  *CityData
-		ok    bool
-		parts []string
-		val   float64
+		line string
+		data *CityData
+		ok   bool
+		val  int
+		key  string
 
 		tScan, tRead, tProcess      time.Time
 		since_tRead, since_tProcess time.Duration
@@ -61,17 +61,11 @@ func main() {
 		line = scanner.Text()
 		since_tRead += time.Since(tRead)
 		tProcess = time.Now()
-		parts = strings.SplitN(line, ";", 2)
-		val, err = strconv.ParseFloat(parts[1], 64)
-		if len(parts) != 2 || err != nil {
-			log.Println("eh?", parts, err)
-			continue
-		}
-
-		data, ok = cities[parts[0]]
+		key, val = SplitParse(line)
+		data, ok = cities[key]
 		if !ok {
 			data = &CityData{val, val, val, 1}
-			cities[parts[0]] = data
+			cities[key] = data
 			continue
 		}
 
@@ -108,19 +102,20 @@ func main() {
 	var sb strings.Builder
 	for _, k := range keys {
 		data = cities[k]
-		fmt.Fprintf(&sb, "%s=%.1f/%.1f/%.1f\n", k, data.Min, data.Sum/float64(data.Count), data.Max)
+		fmt.Fprintf(&sb, "%s=%.1f/%.1f/%.1f\n", k,
+			float64(data.Min)/10, float64(data.Sum)/float64(data.Count)/10, float64(data.Max)/10)
 	}
 
-	fmt.Println(sb.String())
+	os.Stdout.WriteString(sb.String())
 	since_tPrint = time.Since(tPrint)
 	since_tTotal := time.Since(tTotal)
 	log.Printf(`
 = Scanning Took: %v
-	- Reading: %v
-	- Processing: %v
-  = Sorting Took: %v
-  = Printing Took: %v
-  = Total Took: %v
+  - Reading: %v
+  - Processing: %v
+= Sorting Took: %v
+= Printing Took: %v
+= Total Took: %v
  	`,
 		since_tScan,
 		since_tRead,
@@ -129,4 +124,19 @@ func main() {
 		since_tPrint,
 		since_tTotal,
 	)
+}
+
+func SplitParse(line string) (key string, val int) {
+	i := strings.IndexByte(line, ';')
+	key = line[:i]
+	ll := len(line)
+	rest := line[i+1:ll-2] + line[ll-1:]
+
+	val64, err := strconv.ParseInt(rest, 10, 32)
+	if err != nil {
+		panic(err)
+	}
+
+	val = int(val64)
+	return
 }

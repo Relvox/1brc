@@ -19,8 +19,7 @@ type CityData struct {
 }
 
 func main() {
-	t0 := time.Now()
-	defer func() { log.Println("= Total Took:", time.Since(t0)) }()
+	tTotal := time.Now()
 
 	flagProf := flag.String("cprof", "", "write cpu profile to file")
 	flagN := flag.Int64("n", 1_000_000_000, "max n")
@@ -44,20 +43,25 @@ func main() {
 
 	var (
 		scanner = bufio.NewScanner(file)
-		cities  = make(map[string]CityData)
-		t1      = time.Now()
+		cities  = make(map[string]*CityData)
 
 		line  string
-		data  CityData
+		data  *CityData
 		ok    bool
 		parts []string
 		val   float64
+
+		tScan, tRead, tProcess      time.Time
+		since_tRead, since_tProcess time.Duration
 	)
 
+	tScan = time.Now()
+	tRead = tScan
 	for i := int64(0); scanner.Scan() && i < *flagN; i++ {
 		line = scanner.Text()
-
-		parts = strings.Split(line, ";")
+		since_tRead += time.Since(tRead)
+		tProcess = time.Now()
+		parts = strings.SplitN(line, ";", 2)
 		val, err = strconv.ParseFloat(parts[1], 64)
 		if len(parts) != 2 || err != nil {
 			log.Println("eh?", parts, err)
@@ -66,7 +70,7 @@ func main() {
 
 		data, ok = cities[parts[0]]
 		if !ok {
-			data = CityData{val, val, val, 1}
+			data = &CityData{val, val, val, 1}
 			cities[parts[0]] = data
 			continue
 		}
@@ -79,17 +83,19 @@ func main() {
 		}
 		data.Sum += val
 		data.Count++
-		cities[parts[0]] = data
+
+		since_tProcess += time.Since(tProcess)
+		tRead = time.Now()
 	}
 
 	if err := scanner.Err(); err != nil {
 		log.Fatal(err)
 	}
 
-	since_t1 := time.Since(t1)
-	var t2, t3 time.Time
-	var since_t2, since_t3 time.Duration
-	t2 = time.Now()
+	since_tScan := time.Since(tScan)
+	var tSort, tPrint time.Time
+	var since_tSort, since_tPrint time.Duration
+	tSort = time.Now()
 
 	keys := make([]string, 0, len(cities))
 	for k := range cities {
@@ -97,16 +103,30 @@ func main() {
 	}
 	sort.Strings(keys)
 
-	since_t2 = time.Since(t2)
-	t3 = time.Now()
+	since_tSort = time.Since(tSort)
+	tPrint = time.Now()
+	var sb strings.Builder
 	for _, k := range keys {
 		data = cities[k]
-		fmt.Printf("%s=%.1f/%.1f/%.1f\n", k, data.Min, data.Sum/float64(data.Count), data.Max)
+		fmt.Fprintf(&sb, "%s=%.1f/%.1f/%.1f\n", k, data.Min, data.Sum/float64(data.Count), data.Max)
 	}
 
-	since_t3 = time.Since(t3)
-
-	log.Println("= Scanning Took:", since_t1)
-	log.Println("= Sorting Took:", since_t2)
-	log.Println("= Printing Took:", since_t3)
+	fmt.Println(sb.String())
+	since_tPrint = time.Since(tPrint)
+	since_tTotal := time.Since(tTotal)
+	log.Printf(`
+= Scanning Took: %v
+	- Reading: %v
+	- Processing: %v
+  = Sorting Took: %v
+  = Printing Took: %v
+  = Total Took: %v
+ 	`,
+		since_tScan,
+		since_tRead,
+		since_tProcess,
+		since_tSort,
+		since_tPrint,
+		since_tTotal,
+	)
 }

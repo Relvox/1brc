@@ -10,8 +10,7 @@
             "request": "launch",
             "mode": "debug",
             "program": "${file}",
-            "args": ["-n","1000000"]
+            "args": ["-n","10000000"]
         }
-
     ]
 }

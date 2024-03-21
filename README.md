@@ -37,12 +37,24 @@
 5. Custom Split-Parsing + Int cheat + "direct" print
    ```
    = Scanning Took: 2m27.5432231s
-   - Reading: 33.6752093s
-   - Processing: 1m49.5673342s
+     - Reading: 33.6752093s
+     - Processing: 1m49.5673342s
    = Sorting Took: 7.5124ms
    = Printing Took: 1.8333401s
    = Total Took: 2m29.3840756s
    ```
+6. split map to be handled by goroutines
+   1. Slight savings by trading off intense allocations
+   ```
+   = Scanning Took: 2m47.4962358s
+     - Reading: 16.1344224s
+     - Process: 2m11.0595068s
+     - Waiting: 0s
+   = Sorting Took: 12.6701ms
+   = Printing Took: 1.7668419s
+   = Total Took: 2m49.3090915s
+   ```
+
 
 ## Research
 

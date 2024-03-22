@@ -9,6 +9,7 @@ import (
 	"os"
 	"runtime/pprof"
 	"runtime/trace"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -17,11 +18,20 @@ import (
 )
 
 const (
-	READ_BUF = 1024000
-	CHANS    = 64
-	CHAN_BUF = 100
-	MAP_SIZE = 1000
+	READ_BUF = 1024 * 1024
+	CHANS    = 10
+
+	BLOCK_CHAN_BUF = 64
+	KVP_BATCH      = 512
+	KVP_CHAN_BUF   = 64
+
+	MAP_SIZE = 512
 )
+
+type KVP struct {
+	Key   string
+	Value int
+}
 
 type CityData struct {
 	Min, Sum, Max int
@@ -29,9 +39,30 @@ type CityData struct {
 	Lock          *sync.Mutex
 }
 
+func (cd *CityData) Merge(other *CityData) *CityData {
+	if cd == nil {
+		return other
+	}
+
+	cd.Min = min(cd.Min, other.Min)
+	cd.Max = max(cd.Max, other.Max)
+	cd.Sum = cd.Sum + other.Sum
+	cd.Count = cd.Count + other.Count
+	return cd
+}
+
+var (
+	since_tRead       time.Duration
+	since_tParseBlock time.Duration
+	since_tMerge      time.Duration
+	since_tSort       time.Duration
+	since_tPrintPrep  time.Duration
+	since_tPrint      time.Duration
+)
+
 func main() {
 	tTotal := time.Now()
-
+	tSetup := time.Now()
 	flagProf := flag.String("prof", "", "write cpu profile to file")
 	flagTrace := flag.String("trace", "", "write trace to file")
 	flagN := flag.Int64("n", 1_000_000_000, "max n")
@@ -52,148 +83,119 @@ func main() {
 		pprof.StartCPUProfile(f)
 		defer pprof.StopCPUProfile()
 	}
+	since_tSetup := time.Since(tSetup)
 
-	file, err := os.Open("../../data/measurements.txt")
-	if err != nil {
-		panic(err)
-	}
-	defer file.Close()
+	chanChanBlock := ReadFile(*flagN)
 
-	var (
-		wg         *sync.WaitGroup = &sync.WaitGroup{}
-		mapLock    *sync.RWMutex   = &sync.RWMutex{}
-		blockChans []chan []byte   = make([]chan []byte, CHANS)
-
-		output = make(map[string]*CityData, MAP_SIZE)
-	)
-	wg.Add(CHANS)
-	for i := range CHANS {
-		blockChans[i] = make(chan []byte, CHAN_BUF)
+	tParseBlock := time.Now()
+	var wgInner *sync.WaitGroup = &sync.WaitGroup{}
+	var outputs []map[string]*CityData
+	for chanBlock := range chanChanBlock {
+		wgInner.Add(1)
 		go func() {
-			defer wg.Done()
-			var (
-				line  string
-				data  *CityData
-				ok    bool
-				key   string
-				val   int
-				block []byte
-			)
-			for block = range blockChans[i] {
-				newlineIndex := bytes.IndexByte(block, '\n')
-				for {
-					if newlineIndex <= 0 {
-						break
-					}
-
-					line = string(block[:newlineIndex])
-					key, val = SplitParse(line)
-					mapLock.RLock()
-					data, ok = output[key]
-					mapLock.RUnlock()
-					if !ok {
-						data = &CityData{val, val, val, 1, &sync.Mutex{}}
-						mapLock.Lock()
-						output[key] = data
-						mapLock.Unlock()
-						continue
-					}
-
-					data.Lock.Lock()
-					if val < data.Min {
-						data.Min = val
-					}
-					if val > data.Max {
-						data.Max = val
-					}
-					data.Sum += val
-					data.Count++
-					data.Lock.Unlock()
-					block = block[newlineIndex+1:]
-					newlineIndex = bytes.IndexByte(block, '\n')
-				}
-			}
+			chanBatch := ParseBlock(chanBlock)
+			output := MapData(chanBatch)
+			outputs = append(outputs, output)
+			wgInner.Done()
 		}()
 	}
 
-	var (
-		tRead = time.Now()
-		buf   = make([]byte, READ_BUF)
+	tWaitInner := time.Now()
+	wgInner.Wait()
+	since_tWaitInner := time.Since(tWaitInner)
+	since_tParseBlock = time.Since(tParseBlock)
 
-		off, i       int64
-		n, chanIndex int
+	tMerge := time.Now()
+	output := outputs[0]
+
+	for _, o := range outputs[1:] {
+		for k, v := range o {
+			output[k] = output[k].Merge(v)
+		}
+	}
+	since_tMerge = time.Since(tMerge)
+
+	since_tSort, since_tPrintPrep, since_tPrint = PrintOutput(output)
+
+	log.Printf(`
+[ Setup: %v
+~ Read: %v
+| Wait Inner: %v
+~ Parse Block: %v
+? Merge Maps: %v
+? Sorting Took: %v
+? Print Prep: %v
+? Printing: %v
+= Total Took: %v
+		 `,
+		since_tSetup,
+		since_tRead,
+		since_tWaitInner,
+		since_tParseBlock,
+		since_tMerge,
+		since_tSort,
+		since_tPrintPrep,
+		since_tPrint,
+		time.Since(tTotal),
 	)
-	for i = int64(0); ; i += int64(n) {
-		if off>>4 >= *flagN {
-			break
+}
+
+func ReadFile(flagN int64) (chanChanBlock chan chan []byte) {
+	tRead := time.Now()
+	chanChanBlock = make(chan chan []byte, CHANS)
+	chanBlocks := [CHANS]chan []byte{}
+
+	go func() {
+		file, err := os.Open("../../data/measurements.txt")
+		if err != nil {
+			panic(err)
 		}
 
-		n, err = file.ReadAt(buf, off)
-		for n = n - 1; n >= 0; n-- {
-			if buf[n] == '\n' {
+		var (
+			off       int64
+			chanIndex int
+			n         int
+		)
+
+		for i := int64(0); ; i += int64(n) {
+			if off>>4 >= flagN {
 				break
 			}
+
+			buf := make([]byte, READ_BUF)
+			n, err = file.ReadAt(buf, off)
+			for n = n - 1; n >= 0; n-- {
+				if buf[n] == '\n' {
+					break
+				}
+			}
+
+			off += int64(n) + 1
+			if chanBlocks[chanIndex] == nil {
+				chanBlocks[chanIndex] = make(chan []byte, BLOCK_CHAN_BUF)
+				chanChanBlock <- chanBlocks[chanIndex]
+			}
+
+			chanBlocks[chanIndex] <- buf[:n]
+			if err == io.EOF {
+				break
+			}
+
+			chanIndex = (chanIndex + 1) % CHANS
 		}
-		off += int64(n) + 1
-		blockChans[chanIndex] <- bytes.Clone(buf[:n])
-		if err == io.EOF {
-			break
+
+		for i := range CHANS {
+			close(chanBlocks[i])
 		}
-		chanIndex = (chanIndex + 1) % CHANS
-	}
-
-	for i := range CHANS {
-		close(blockChans[i])
-	}
-
-	since_tRead := time.Since(tRead)
-	tWait := time.Now()
-	wg.Wait()
-	since_tWait := time.Since(tWait)
-
-	var data *CityData
-	var tSort, tPrint time.Time
-	var since_tSort, since_tPrint time.Duration
-	tSort = time.Now()
-	keys := make([]string, 0, len(output))
-	for k := range output {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	since_tSort += time.Since(tSort)
-
-	tPrint = time.Now()
-	var sb strings.Builder
-	for _, k := range keys {
-		data = output[k]
-		fmt.Fprintf(&sb, "%s=%.1f/%.1f/%.1f\n", k,
-			float64(data.Min)/10, float64(data.Sum)/float64(data.Count)/10, float64(data.Max)/10)
-	}
-
-	os.Stdout.WriteString(sb.String())
-	since_tPrint += time.Since(tPrint)
-
-	since_tTotal := time.Since(tTotal)
-	log.Printf(`
-= Reading Took: %v
-  - Waiting: %v
-= Sorting Took: %v
-= Printing Took: %v
-= Total Took: %v
- 	`,
-		since_tRead,
-		since_tWait,
-		since_tSort,
-		since_tPrint,
-		since_tTotal,
-	)
+		close(chanChanBlock)
+		since_tRead = time.Since(tRead)
+	}()
+	return chanChanBlock
 }
 
 func SplitParse(line string) (key string, val int) {
 	i := strings.IndexByte(line, ';')
-	save := strings.Clone(line)
 	key, line = line[:i], line[i+1:]
-	_ = save
 	i = strings.IndexByte(line, '.')
 	rest, units := line[:i], line[i+1:]
 	if units == "" {
@@ -207,4 +209,90 @@ func SplitParse(line string) (key string, val int) {
 
 	val = int(val64)
 	return
+}
+
+func ParseBlock(chanBlock chan []byte) (chanBatch chan []KVP) {
+	batch := make([]KVP, 0, KVP_BATCH)
+	sep := []byte{10}
+	chanBatch = make(chan []KVP, KVP_CHAN_BUF)
+	go func() {
+		for block := range chanBlock {
+			for {
+				m := bytes.Index(block, sep)
+				if m < 0 {
+					break
+				}
+
+				key, val := SplitParse(string(block[:m:m]))
+				batch = append(batch, KVP{key, val})
+				if len(batch) >= KVP_BATCH {
+					chanBatch <- batch
+					batch = make([]KVP, 0, KVP_BATCH)
+				}
+				block = block[m+1:]
+			}
+
+			key, val := SplitParse(string(block))
+			batch = append(batch, KVP{key, val})
+			if len(batch) >= KVP_BATCH {
+				chanBatch <- batch
+				batch = make([]KVP, 0, KVP_BATCH)
+			}
+		}
+
+		chanBatch <- slices.Clip(batch)
+		close(chanBatch)
+	}()
+
+	return chanBatch
+}
+
+func MapData(chanBatch chan []KVP) (output map[string]*CityData) {
+	output = make(map[string]*CityData, 0)
+	for kvps := range chanBatch {
+		for _, kvp := range kvps {
+			data, ok := output[kvp.Key]
+
+			if !ok {
+				data = &CityData{kvp.Value, kvp.Value, kvp.Value, 1, &sync.Mutex{}}
+				output[kvp.Key] = data
+				continue
+			}
+
+			if kvp.Value < data.Min {
+				data.Min = kvp.Value
+			}
+			if kvp.Value > data.Max {
+				data.Max = kvp.Value
+			}
+			data.Sum += kvp.Value
+			data.Count++
+		}
+	}
+	return output
+}
+
+func PrintOutput(output map[string]*CityData) (time.Duration, time.Duration, time.Duration) {
+	tSort := time.Now()
+	keys := make([]string, 0, len(output))
+	for k := range output {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	since_tSort := time.Since(tSort)
+
+	tPrintPrep := time.Now()
+	var sb strings.Builder
+	for _, k := range keys {
+		data := output[k]
+		fmt.Fprintf(&sb, "%s=%.1f/%.1f/%.1f\n", k,
+			float64(data.Min)/10, float64(data.Sum)/float64(data.Count)/10, float64(data.Max)/10)
+	}
+	since_tPrintPrep := time.Since(tPrintPrep)
+
+	tPrint := time.Now()
+	os.Stdout.WriteString(sb.String())
+	since_tPrint := time.Since(tPrint)
+
+	return since_tSort, since_tPrintPrep, since_tPrint
 }

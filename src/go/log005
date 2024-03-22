@@ -1,7 +1,11 @@
-2024/03/22 20:39:48 
-= Reading Took: 1.6677214s
-  - Waiting: 760.2465ms
-= Sorting Took: 6.9994ms
-= Printing Took: 1.7485044s
-= Total Took: 4.1839975s
- 	
+2024/03/24 20:52:22 
+	[ Setup: 0s
+	~ Read: 473.3493ms
+	| Wait Inner: 446.5993ms
+	~ Parse Block: 919.9486ms
+	? Merge Maps: 46.9986ms
+	? Sorting Took: 6.9994ms
+	? Print Prep: 31.0208ms
+	? Printing: 264.9697ms
+	= Total Took: 1.2699371s
+		 

@@ -17,16 +17,18 @@ import (
 )
 
 const (
-	READ_BUF = 1024000
-	CHANS    = 64
-	CHAN_BUF = 100
-	MAP_SIZE = 1000
+	READ_BUF      = 1024000
+	READ_CHANS    = 5
+	READ_CHAN_BUF = 20
+	MAP_CHANS     = 256
+	MAP_CHAN_BUF  = 100
+	MAP_SIZE      = 2000
 )
 
 type CityData struct {
+	Name          string
 	Min, Sum, Max int
 	Count         int
-	Lock          *sync.Mutex
 }
 
 func main() {
@@ -44,6 +46,7 @@ func main() {
 		defer f.Close()
 		defer trace.Stop()
 	}
+	
 	if *flagProf != "" {
 		f, err := os.Create(*flagProf)
 		if err != nil {
@@ -60,24 +63,59 @@ func main() {
 	defer file.Close()
 
 	var (
-		wg         *sync.WaitGroup = &sync.WaitGroup{}
-		mapLock    *sync.RWMutex   = &sync.RWMutex{}
-		blockChans []chan []byte   = make([]chan []byte, CHANS)
+		wgRead *sync.WaitGroup = &sync.WaitGroup{}
+		wgMaps *sync.WaitGroup = &sync.WaitGroup{}
 
-		output = make(map[string]*CityData, MAP_SIZE)
+		blockChans []chan []byte = make([]chan []byte, READ_CHANS)
+
+		mapChans []chan *CityData       = make([]chan *CityData, MAP_CHANS)
+		resMaps  []map[string]*CityData = make([]map[string]*CityData, MAP_CHANS)
 	)
-	wg.Add(CHANS)
-	for i := range CHANS {
-		blockChans[i] = make(chan []byte, CHAN_BUF)
+
+	wgMaps.Add(MAP_CHANS)
+	for i := range MAP_CHANS {
+		mapChans[i] = make(chan *CityData, MAP_CHAN_BUF)
+		resMaps[i] = make(map[string]*CityData, MAP_SIZE)
 		go func() {
-			defer wg.Done()
+			defer wgMaps.Done()
 			var (
-				line  string
-				data  *CityData
-				ok    bool
-				key   string
-				val   int
-				block []byte
+				data *CityData
+				ok   bool
+				val  int
+				key  string
+			)
+			for data = range mapChans[i] {
+				key = data.Name
+				_, ok = resMaps[i][key]
+				if !ok {
+					resMaps[i][key] = data
+					continue
+				}
+				if val < data.Min {
+					data.Min = val
+				}
+				if val > data.Max {
+					data.Max = val
+				}
+				data.Sum += val
+				data.Count++
+			}
+		}()
+	}
+
+	wgRead.Add(READ_CHANS)
+	for i := range READ_CHANS {
+		blockChans[i] = make(chan []byte, READ_CHAN_BUF)
+		go func() {
+			defer wgRead.Done()
+			var (
+				// output map[string]*CityData = chanMaps[i]
+				line    string
+				data    *CityData
+				key     string
+				chanKey byte
+				val     int
+				block   []byte
 			)
 			for block = range blockChans[i] {
 				newlineIndex := bytes.IndexByte(block, '\n')
@@ -88,27 +126,10 @@ func main() {
 
 					line = string(block[:newlineIndex])
 					key, val = SplitParse(line)
-					mapLock.RLock()
-					data, ok = output[key]
-					mapLock.RUnlock()
-					if !ok {
-						data = &CityData{val, val, val, 1, &sync.Mutex{}}
-						mapLock.Lock()
-						output[key] = data
-						mapLock.Unlock()
-						continue
-					}
+					data = &CityData{key, val, val, val, 1}
+					chanKey = key[0]
+					mapChans[chanKey] <- data
 
-					data.Lock.Lock()
-					if val < data.Min {
-						data.Min = val
-					}
-					if val > data.Max {
-						data.Max = val
-					}
-					data.Sum += val
-					data.Count++
-					data.Lock.Unlock()
 					block = block[newlineIndex+1:]
 					newlineIndex = bytes.IndexByte(block, '\n')
 				}
@@ -120,7 +141,7 @@ func main() {
 		tRead = time.Now()
 		buf   = make([]byte, READ_BUF)
 
-		off, i       int64
+		off,i          int64
 		n, chanIndex int
 	)
 	for i = int64(0); ; i += int64(n) {
@@ -139,39 +160,47 @@ func main() {
 		if err == io.EOF {
 			break
 		}
-		chanIndex = (chanIndex + 1) % CHANS
+		chanIndex = (chanIndex + 1) % READ_CHANS
 	}
 
-	for i := range CHANS {
+	for i := range READ_CHANS {
 		close(blockChans[i])
 	}
 
 	since_tRead := time.Since(tRead)
 	tWait := time.Now()
-	wg.Wait()
+	wgRead.Wait()
+	for i := range MAP_CHANS {
+		close(mapChans[i])
+	}
+	wgMaps.Wait()
 	since_tWait := time.Since(tWait)
 
 	var data *CityData
 	var tSort, tPrint time.Time
 	var since_tSort, since_tPrint time.Duration
 	tSort = time.Now()
-	keys := make([]string, 0, len(output))
-	for k := range output {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	since_tSort += time.Since(tSort)
+	var k string
+	for i := range MAP_CHANS {
+		keys := make([]string, 0, len(resMaps[i]))
+		for k = range resMaps[i] {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		since_tSort += time.Since(tSort)
 
-	tPrint = time.Now()
-	var sb strings.Builder
-	for _, k := range keys {
-		data = output[k]
-		fmt.Fprintf(&sb, "%s=%.1f/%.1f/%.1f\n", k,
-			float64(data.Min)/10, float64(data.Sum)/float64(data.Count)/10, float64(data.Max)/10)
-	}
+		tPrint = time.Now()
+		var sb strings.Builder
+		for _, k = range keys {
+			data = resMaps[i][k]
+			fmt.Fprintf(&sb, "%s=%.1f/%.1f/%.1f\n", k,
+				float64(data.Min)/10, float64(data.Sum)/float64(data.Count)/10, float64(data.Max)/10)
+		}
 
-	os.Stdout.WriteString(sb.String())
-	since_tPrint += time.Since(tPrint)
+		os.Stdout.WriteString(sb.String())
+		since_tPrint += time.Since(tPrint)
+		tSort = time.Now()
+	}
 
 	since_tTotal := time.Since(tTotal)
 	log.Printf(`
@@ -190,17 +219,18 @@ func main() {
 }
 
 func SplitParse(line string) (key string, val int) {
+	var rest, units string
 	i := strings.IndexByte(line, ';')
-	save := strings.Clone(line)
 	key, line = line[:i], line[i+1:]
-	_ = save
 	i = strings.IndexByte(line, '.')
-	rest, units := line[:i], line[i+1:]
+	rest, units = line[:i], line[i+1:]
 	if units == "" {
 		units = "0"
 	}
-
-	val64, err := strconv.ParseInt(rest+units, 10, 32)
+	
+	var val64 int64
+	var err error
+	val64, err = strconv.ParseInt(rest+units, 10, 32)
 	if err != nil {
 		panic(fmt.Errorf("parsing '%s': %w", rest+units, err))
 	}

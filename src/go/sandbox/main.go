@@ -7,17 +7,16 @@ import (
 	"log"
 	"os"
 	"runtime/pprof"
-	"strings"
+	"time"
 )
 
 const (
-	// BUF = 1024*1024/4 // 262144
-	BUF = 512000
+	INPUT_BYTES = 15884020369
+	BUF         = 1024000
 )
 
 func main() {
-	flagProf := flag.String("cprof", "", "write cpu profile to file")
-	flagN := flag.Int64("n", 1_000_000_000, "max n")
+	flagProf := flag.String("prof", "", "write cpu profile to file")
 
 	flag.Parse()
 
@@ -29,31 +28,42 @@ func main() {
 		pprof.StartCPUProfile(f)
 		defer pprof.StopCPUProfile()
 	}
-	var sb strings.Builder
 
-	// ~ 512000
-	// for BUF := 128000; BUF < 768000; BUF += 1024 {
-	file, err := os.Open("../../../data/measurements.txt")
-	if err != nil {
-		panic(err)
-	}
-	defer file.Close()
+	for BUF := 10; BUF <= 1024; BUF += 2{
+		fmt.Print(BUF*1024, " ")
+		file, err := os.Open("../../../data/measurements.txt")
+		if err != nil {
+			panic(err)
+		}
+		defer file.Close()
 
-	buf := make([]byte, BUF)
-	var off int64
-	var n int
-	for i := int64(0); ; i += int64(n) {
-		if i >= *flagN {
-			break
+		t1 := time.Now()
+		buf := make([]byte, BUF*1024)
+		var off, i int64
+		var n int
+
+		nextPrint := 0
+		for i = int64(0); ; i += int64(n) {
+			if i >= int64(nextPrint) {
+				fmt.Print("*")
+				nextPrint += 100_000_000
+			}
+			n, err = file.ReadAt(buf, off)
+			for n = n - 1; n >= 0; n-- {
+				if buf[n] == '\n' {
+					break
+				}
+			}
+			off += int64(n) + 1
+			if err == io.EOF {
+				break
+			}
+		}
+		if off != INPUT_BYTES {
+			panic(i)
 		}
 
-		n, err = file.ReadAt(buf, off)
-
-		if n < BUF || err == io.EOF {
-			break
-		}
+		since_t1 := time.Since(t1)
+		fmt.Println("", since_t1)
 	}
-
-	// }
-	fmt.Println(sb.String())
 }

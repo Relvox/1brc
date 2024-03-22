@@ -3,7 +3,7 @@
 1. Make GPT4 Translate file generation code to Go.
 2. Run to generate 1B measurements, take a v.long time.
    1. Took 48 mins
-   2. Generate 15.5g wincount (14.7Gb)
+   2. Generate 15.5g (win-count: 14.7Gb)
 3. Start with naive go attempt:
    1. read line by line, aggregate to map[string]data
    2. data= min, max, sum, count
@@ -43,7 +43,7 @@
    = Printing Took: 1.8333401s
    = Total Took: 2m29.3840756s
    ```
-6. split map to be handled by goroutines
+6. split map to be handled by go-routines
    1. Slight savings by trading off intense allocations
    ```
    = Scanning Took: 2m47.4962358s
@@ -57,17 +57,31 @@
 7. Batching lines is awesome
    ```
    = Scanning Took: 57.2182617s
-   - Reading: 38.2835403s
-   - Process: 14.7992593s
-   - Waiting: 0s
+      - Reading: 38.2835403s
+      - Process: 14.7992593s
+      - Waiting: 0s
    = Sorting Took: 6.9824ms
    = Printing Took: 1.7083713s
    = Total Took: 58.9396155s
    ```
-8. 
-## Research
+8. rewriting read
+   1. reading chunks of 1024K bytes
+   2. lock map and cities 
+   3. tweak consts
+   ```
+   = Reading Took: 32.3135917s
+     - Waiting: 13.6632951s
+   = Sorting Took: 8.8517ms
+   = Printing Took: 1.6723951s
+   = Total Took: 47.6586621s
+   ```
+9. 
+   ```
 
-1. Refresher on how to read file line by line :P
+   ```
+## Notes
+
+1. Maybe sort the names regardless of the data?
 
 # Ideas
 

@@ -22,8 +22,10 @@ const (
 	CHANS    = 10
 
 	BLOCK_CHAN_BUF = 64
-	KVP_BATCH      = 512
-	KVP_CHAN_BUF   = 64
+	BATCH_CHAN_BUF = 64
+	MAP_CHAN_BUF   = 64
+
+	KVP_BATCH = 512
 
 	MAP_SIZE = 512
 )
@@ -32,6 +34,8 @@ type KVP struct {
 	Key   string
 	Value int
 }
+
+type OutputMap = map[string]*CityData
 
 type CityData struct {
 	Min, Sum, Max int
@@ -53,7 +57,9 @@ func (cd *CityData) Merge(other *CityData) *CityData {
 
 var (
 	since_tRead       time.Duration
+	since_tInnerRead  time.Duration
 	since_tParseBlock time.Duration
+	since_tMapData    time.Duration
 	since_tMerge      time.Duration
 	since_tSort       time.Duration
 	since_tPrintPrep  time.Duration
@@ -62,7 +68,6 @@ var (
 
 func main() {
 	tTotal := time.Now()
-	tSetup := time.Now()
 	flagProf := flag.String("prof", "", "write cpu profile to file")
 	flagTrace := flag.String("trace", "", "write trace to file")
 	flagN := flag.Int64("n", 1_000_000_000, "max n")
@@ -83,55 +88,41 @@ func main() {
 		pprof.StartCPUProfile(f)
 		defer pprof.StopCPUProfile()
 	}
-	since_tSetup := time.Since(tSetup)
 
 	chanChanBlock := ReadFile(*flagN)
+	chanChanBatch := ParseBlocks(chanChanBlock)
+	chanOutput := MapData(chanChanBatch)
 
-	tParseBlock := time.Now()
-	var wgInner *sync.WaitGroup = &sync.WaitGroup{}
-	var outputs []map[string]*CityData
-	for chanBlock := range chanChanBlock {
-		wgInner.Add(1)
-		go func() {
-			chanBatch := ParseBlock(chanBlock)
-			output := MapData(chanBatch)
-			outputs = append(outputs, output)
-			wgInner.Done()
-		}()
-	}
-
-	tWaitInner := time.Now()
-	wgInner.Wait()
-	since_tWaitInner := time.Since(tWaitInner)
-	since_tParseBlock = time.Since(tParseBlock)
-
+	var output OutputMap
 	tMerge := time.Now()
-	output := outputs[0]
+	for subOutput := range chanOutput {
+		if len(output) == 0 {
+			output = subOutput
+			continue
+		}
 
-	for _, o := range outputs[1:] {
-		for k, v := range o {
+		for k, v := range subOutput {
 			output[k] = output[k].Merge(v)
 		}
 	}
 	since_tMerge = time.Since(tMerge)
-
 	since_tSort, since_tPrintPrep, since_tPrint = PrintOutput(output)
 
 	log.Printf(`
-[ Setup: %v
-~ Read: %v
-| Wait Inner: %v
-~ Parse Block: %v
+[ Read: %v
+ > Max: %v
+[ Parse: %v
+[ MapData: %v
 ? Merge Maps: %v
 ? Sorting Took: %v
 ? Print Prep: %v
 ? Printing: %v
 = Total Took: %v
 		 `,
-		since_tSetup,
 		since_tRead,
-		since_tWaitInner,
+		since_tInnerRead,
 		since_tParseBlock,
+		since_tMapData,
 		since_tMerge,
 		since_tSort,
 		since_tPrintPrep,
@@ -143,9 +134,9 @@ func main() {
 func ReadFile(flagN int64) (chanChanBlock chan chan []byte) {
 	tRead := time.Now()
 	chanChanBlock = make(chan chan []byte, CHANS)
-	chanBlocks := [CHANS]chan []byte{}
+	chanBlock := [CHANS]chan []byte{}
 
-	go func() {
+	go func() { // TODO: pass arg?
 		file, err := os.Open("../../data/measurements.txt")
 		if err != nil {
 			panic(err)
@@ -157,6 +148,7 @@ func ReadFile(flagN int64) (chanChanBlock chan chan []byte) {
 			n         int
 		)
 
+		tInnerRead := time.Now()
 		for i := int64(0); ; i += int64(n) {
 			if off>>4 >= flagN {
 				break
@@ -171,12 +163,15 @@ func ReadFile(flagN int64) (chanChanBlock chan chan []byte) {
 			}
 
 			off += int64(n) + 1
-			if chanBlocks[chanIndex] == nil {
-				chanBlocks[chanIndex] = make(chan []byte, BLOCK_CHAN_BUF)
-				chanChanBlock <- chanBlocks[chanIndex]
+			if chanBlock[chanIndex] == nil {
+				chanBlock[chanIndex] = make(chan []byte, BLOCK_CHAN_BUF)
+				chanChanBlock <- chanBlock[chanIndex]
 			}
 
-			chanBlocks[chanIndex] <- buf[:n]
+			chanBlock[chanIndex] <- buf[:n]
+			since_tInnerRead = max(since_tInnerRead, time.Since(tInnerRead))
+			tInnerRead = time.Now()
+
 			if err == io.EOF {
 				break
 			}
@@ -185,11 +180,12 @@ func ReadFile(flagN int64) (chanChanBlock chan chan []byte) {
 		}
 
 		for i := range CHANS {
-			close(chanBlocks[i])
+			close(chanBlock[i])
 		}
 		close(chanChanBlock)
 		since_tRead = time.Since(tRead)
 	}()
+
 	return chanChanBlock
 }
 
@@ -211,65 +207,97 @@ func SplitParse(line string) (key string, val int) {
 	return
 }
 
-func ParseBlock(chanBlock chan []byte) (chanBatch chan []KVP) {
-	batch := make([]KVP, 0, KVP_BATCH)
-	sep := []byte{10}
-	chanBatch = make(chan []KVP, KVP_CHAN_BUF)
+func ParseBlocks(chanChanBlock chan chan []byte) (chanChanBatch chan chan []KVP) {
+	tParseBlock := time.Now()
+	chanChanBatch = make(chan chan []KVP, CHANS)
+
+	var wg sync.WaitGroup
+	wg.Add(CHANS)
 	go func() {
-		for block := range chanBlock {
-			for {
-				m := bytes.Index(block, sep)
-				if m < 0 {
-					break
+		for chanBlock := range chanChanBlock {
+			go func() {
+				chanBatch := make(chan []KVP, BATCH_CHAN_BUF)
+				chanChanBatch <- chanBatch
+				batch := make([]KVP, 0, KVP_BATCH)
+				for block := range chanBlock {
+					for {
+						m := bytes.Index(block, []byte{10})
+						if m < 0 {
+							break
+						}
+
+						key, val := SplitParse(string(block[:m:m]))
+						batch = append(batch, KVP{key, val})
+						if len(batch) >= KVP_BATCH {
+							chanBatch <- batch
+							batch = make([]KVP, 0, KVP_BATCH)
+						}
+						block = block[m+1:]
+					}
+
+					key, val := SplitParse(string(block))
+					batch = append(batch, KVP{key, val})
+					if len(batch) >= KVP_BATCH {
+						chanBatch <- batch
+						batch = make([]KVP, 0, KVP_BATCH)
+					}
 				}
 
-				key, val := SplitParse(string(block[:m:m]))
-				batch = append(batch, KVP{key, val})
-				if len(batch) >= KVP_BATCH {
-					chanBatch <- batch
-					batch = make([]KVP, 0, KVP_BATCH)
-				}
-				block = block[m+1:]
-			}
-
-			key, val := SplitParse(string(block))
-			batch = append(batch, KVP{key, val})
-			if len(batch) >= KVP_BATCH {
-				chanBatch <- batch
-				batch = make([]KVP, 0, KVP_BATCH)
-			}
+				chanBatch <- slices.Clip(batch)
+				close(chanBatch)
+				wg.Done()
+			}()
 		}
 
-		chanBatch <- slices.Clip(batch)
-		close(chanBatch)
+		wg.Wait()
+		close(chanChanBatch)
+		since_tParseBlock = time.Since(tParseBlock)
 	}()
 
-	return chanBatch
+	return chanChanBatch
 }
 
-func MapData(chanBatch chan []KVP) (output map[string]*CityData) {
-	output = make(map[string]*CityData, 0)
-	for kvps := range chanBatch {
-		for _, kvp := range kvps {
-			data, ok := output[kvp.Key]
+func MapData(chanChanBatch chan chan []KVP) (chanOutput chan OutputMap) {
+	tMapData := time.Now()
+	chanOutput = make(chan map[string]*CityData, MAP_CHAN_BUF)
+	var wg sync.WaitGroup
+	wg.Add(CHANS)
+	go func() {
+		for chanBatch := range chanChanBatch {
+			go func() {
+				output := make(map[string]*CityData) // TODO: KVP_BATCH
+				for kvps := range chanBatch {
+					for _, kvp := range kvps {
+						data, ok := output[kvp.Key]
 
-			if !ok {
-				data = &CityData{kvp.Value, kvp.Value, kvp.Value, 1, &sync.Mutex{}}
-				output[kvp.Key] = data
-				continue
-			}
+						if !ok {
+							data = &CityData{kvp.Value, kvp.Value, kvp.Value, 1, &sync.Mutex{}}
+							output[kvp.Key] = data
+							continue
+						}
 
-			if kvp.Value < data.Min {
-				data.Min = kvp.Value
-			}
-			if kvp.Value > data.Max {
-				data.Max = kvp.Value
-			}
-			data.Sum += kvp.Value
-			data.Count++
+						if kvp.Value < data.Min {
+							data.Min = kvp.Value
+						}
+						if kvp.Value > data.Max {
+							data.Max = kvp.Value
+						}
+						data.Sum += kvp.Value
+						data.Count++
+					}
+				}
+
+				chanOutput <- output
+				wg.Done()
+			}()
 		}
-	}
-	return output
+
+		wg.Wait()
+		close(chanOutput)
+		since_tMapData = time.Since(tMapData)
+	}()
+
+	return chanOutput
 }
 
 func PrintOutput(output map[string]*CityData) (time.Duration, time.Duration, time.Duration) {

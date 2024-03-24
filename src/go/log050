@@ -1,11 +1,11 @@
-2024/03/24 20:52:37 
-	[ Setup: 0s
-	~ Read: 8.0610372s
-	| Wait Inner: 547.4287ms
-	~ Parse Block: 8.6084659s
-	? Merge Maps: 51.0656ms
-	? Sorting Took: 8.0295ms
-	? Print Prep: 33.0008ms
-	? Printing: 281.0232ms
-	= Total Took: 8.981585s
+2024/03/25 00:40:54 
+[ Read: 7.7616644s
+ > Max: 38.5129ms
+[ Parse: 8.369466s
+[ MapData: 8.369466s
+? Merge Maps: 8.3834649s
+? Sorting Took: 6.9997ms
+? Print Prep: 31.0015ms
+? Printing: 281.9728ms
+= Total Took: 8.7034389s
 		 

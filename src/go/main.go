@@ -5,33 +5,37 @@ import (
 	"flag"
 	"fmt"
 	"hash/fnv"
-	"io"
 	"log"
 	"os"
 	"runtime/pprof"
 	"runtime/trace"
-	"slices"
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
+	"unsafe"
 )
 
 const (
-	READ_BUF = 1024 * 1024
-	CHANS    = 10
+	READ_BUF = 1024 * 1024 * 4
+	CHANS    = 12
 
 	BLOCK_CHAN_BUF = 64
 	BATCH_CHAN_BUF = 64
 	MAP_CHAN_BUF   = 64
 
-	HKV_BATCH = 512
+	HKV_BATCH = 512 * 4
 
-	MAP_SIZE = 512
+	MAP_SIZE = 41_343
 )
 
 type HashKey = uint32
 
+type HK struct {
+	Hash HashKey
+	Key  []byte
+}
 type HKV struct {
 	Hash  HashKey
 	Key   []byte
@@ -48,16 +52,15 @@ type CityData struct {
 	Name          []byte
 }
 
-func (cd *CityData) Merge(other *CityData) *CityData {
-	if cd == nil {
-		return other
+func (cd *CityData) Merge(other *CityData) {
+	if other == nil {
+		return
 	}
 
 	cd.Min = min(cd.Min, other.Min)
 	cd.Max = max(cd.Max, other.Max)
 	cd.Sum += other.Sum
 	cd.Count += other.Count
-	return cd
 }
 
 var (
@@ -101,7 +104,7 @@ func main() {
 
 	tMerge := time.Now()
 
-	output := MergeOutput(chanOutput, make(OutputMap))
+	output := MergeOutput(chanOutput)
 	since_tMerge = time.Since(tMerge)
 	since_tSort, since_tPrintPrep, since_tPrint = PrintOutput(output)
 
@@ -130,7 +133,8 @@ func main() {
 	)
 }
 
-func MergeOutput(chanOutput chan OutputMap, output OutputMap) OutputMap {
+func MergeOutput(chanOutput chan OutputMap) OutputMap {
+	output := make(OutputMap, MAP_SIZE)
 	for subOutput := range chanOutput {
 		if len(output) == 0 {
 			output = subOutput
@@ -139,7 +143,7 @@ func MergeOutput(chanOutput chan OutputMap, output OutputMap) OutputMap {
 
 		for k, v := range subOutput {
 			if v0, ok := output[k]; ok {
-				output[k] = v0.Merge(v)
+				v0.Merge(v)
 			} else {
 				output[k] = v
 			}
@@ -159,23 +163,33 @@ func ReadFile(flagN int64) (chanChanBlock chan chan []byte) {
 			panic(err)
 		}
 
-		var (
-			off       int64
-			chanIndex int
-			n         int
-		)
+		fi, _ := file.Stat()
+		size := fi.Size()
+		low, high := uint32(size), uint32(size>>32)
+		fmap, err := syscall.CreateFileMapping(syscall.Handle(file.Fd()), nil, syscall.PAGE_READONLY, high, low, nil)
+		if err != nil {
+			panic(err)
+		}
+		defer syscall.CloseHandle(fmap)
+		ptr, err := syscall.MapViewOfFile(fmap, syscall.FILE_MAP_READ, 0, 0, uintptr(size))
+		if err != nil {
+			panic(err)
+		}
 
-		for i := int64(0); ; i += int64(n) {
-			if off>>4 >= flagN {
-				break
-			}
+		data := unsafe.Slice((*byte)(unsafe.Pointer(ptr)), size)
 
-			buf := make([]byte, READ_BUF)
-			n, err = file.ReadAt(buf, off)
-			for n = n - 1; n >= 0; n-- {
+		var chanIndex int
+		for off := int64(0); off>>4 < flagN; {
+			buf := data[off:min(size, off+READ_BUF)]
+			var n int
+			for n = len(buf) - 1; n >= 0; n-- {
 				if buf[n] == '\n' {
 					break
 				}
+			}
+
+			if n <= 0 {
+				break
 			}
 
 			off += int64(n) + 1
@@ -187,9 +201,6 @@ func ReadFile(flagN int64) (chanChanBlock chan chan []byte) {
 
 			chanBlocks[chanIndex] <- buf[:n]
 			tReadFile = time.Now()
-			if err == io.EOF {
-				break
-			}
 
 			chanIndex = (chanIndex + 1) % CHANS
 		}
@@ -205,29 +216,27 @@ func ReadFile(flagN int64) (chanChanBlock chan chan []byte) {
 }
 
 func SplitParse(line []byte) (key []byte, val int) {
-	i := bytes.IndexByte(line, ';')
-	key, line = line[:i], line[i+1:]
-	i = bytes.IndexByte(line, '.')
-	rest, units := line[:i], line[i+1:]
-	if len(units) == 1 {
-		val = int(units[0] - '0')
-	}
-
-	var neg bool = rest[0] == '-'
-
+	semiColonIndex := bytes.IndexByte(line, ';')
+	dotIndex := bytes.IndexByte(line, '.')
+	key = line[:semiColonIndex]
+	neg := line[semiColonIndex+1] == '-'
+	startValIndex := semiColonIndex + 1
 	if neg {
-		rest = rest[1:]
+		startValIndex++
 	}
 
-	if len(rest) == 2 {
-		val += 100 * int(rest[0]-'0')
-		rest = rest[1:]
+	for i := startValIndex; i < dotIndex; i++ {
+		val = val*10 + int(line[i]-'0')
 	}
 
-	val += 10 * int(rest[0]-'0')
+	if dotIndex+1 < len(line) {
+		val = val*10 + int(line[dotIndex+1]-'0')
+	}
+
 	if neg {
 		val = -val
 	}
+
 	return
 }
 
@@ -243,31 +252,30 @@ func ParseBlocks(chanChanBlock chan chan []byte) (chanChanBatch chan chan []HKV)
 				chanBatch := make(chan Batch, BATCH_CHAN_BUF)
 				chanChanBatch <- chanBatch
 				batch := make([]HKV, 0, HKV_BATCH)
+				var key []byte
+				var val int
 				for block := range chanBlock {
 					for {
-						m := bytes.Index(block, []byte{10})
+						m := bytes.IndexByte(block, 10)
 						if m < 0 {
-							break
+							key, val = SplitParse(block)
+						} else {
+							key, val = SplitParse(block[:m])
 						}
 
-						key, val := SplitParse(block[:m:m])
-						batch = append(batch, HKV{Key(key), key, val})
+						batch = append(batch, HKV{Hash(key), key, val})
 						if len(batch) >= HKV_BATCH {
 							chanBatch <- batch
 							batch = make(Batch, 0, HKV_BATCH)
 						}
+						if m < 0 {
+							break
+						}
 						block = block[m+1:]
-					}
-
-					key, val := SplitParse(block)
-					batch = append(batch, HKV{Key(key), key, val})
-					if len(batch) >= HKV_BATCH {
-						chanBatch <- batch
-						batch = make(Batch, 0, HKV_BATCH)
 					}
 				}
 
-				chanBatch <- slices.Clip(batch)
+				chanBatch <- batch
 				close(chanBatch)
 				wg.Done()
 			}()
@@ -332,26 +340,27 @@ func MapData(chanChanBatch chan chan Batch) (chanOutput chan OutputMap) {
 
 func PrintOutput(output OutputMap) (time.Duration, time.Duration, time.Duration) {
 	tSort := time.Now()
-	names := make([][]byte, 0, len(output))
-	for _, v := range output {
-		names = append(names, v.Name)
+	names := make([]HK, 0, len(output))
+	for h, v := range output {
+		names = append(names, HK{h, v.Name})
 	}
 
 	sort.Slice(names, func(i, j int) bool {
-		for k := 0; k < len(names[i]) && k < len(names[j]); k++ {
-			if names[i][k] != names[j][k] {
-				return names[i][k] < names[j][k]
+		ki, kj := names[i].Key, names[j].Key
+		for k := 0; k < len(ki) && k < len(kj); k++ {
+			if ki[k] != kj[k] {
+				return ki[k] < kj[k]
 			}
 		}
-		return len(names[i]) < len(names[j])
+		return len(ki) < len(kj)
 	})
 	since_tSort := time.Since(tSort)
 
 	tPrintPrep := time.Now()
 	var sb strings.Builder
 	for _, k := range names {
-		data := output[Key(k)]
-		fmt.Fprintf(&sb, "%s=%.1f/%.1f/%.1f\n", k,
+		data := output[k.Hash]
+		fmt.Fprintf(&sb, "%s=%.1f/%.1f/%.1f\n", k.Key,
 			float64(data.Min)/10, float64(data.Sum)/float64(data.Count)/10, float64(data.Max)/10)
 	}
 	since_tPrintPrep := time.Since(tPrintPrep)
@@ -363,7 +372,7 @@ func PrintOutput(output OutputMap) (time.Duration, time.Duration, time.Duration)
 	return since_tSort, since_tPrintPrep, since_tPrint
 }
 
-func Key(s []byte) HashKey {
+func Hash(s []byte) HashKey {
 	h := fnv.New32a()
 	h.Write(s)
 	res := h.Sum32()

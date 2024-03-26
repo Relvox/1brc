@@ -1,11 +1,12 @@
-2024/03/25 00:40:38 
-[ Read: 447.7156ms
- > Max: 11.2152ms
-[ Parse: 846.6771ms
-[ MapData: 846.6771ms
-? Merge Maps: 877.6737ms
-? Sorting Took: 7.0001ms
-? Print Prep: 27.0003ms
-? Printing: 494.9705ms
-= Total Took: 1.4066446s
+2024/03/26 16:21:26 
+[ Read: 405.4411ms
+[ Parse: 478.0933ms
+  > Wait: 69.9003ms
+[ MapData: 479.0925ms
+  > Wait: 0s
+? Merge Maps: 496.0933ms
+? Sorting Took: 9.9986ms
+? Print Prep: 27.9996ms
+? Printing: 272.2797ms
+= Total Took: 806.3712ms
 		 

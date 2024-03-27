@@ -1,6 +1,7 @@
 package main
 
 import (
+	"brc/pkg"
 	"bytes"
 	"flag"
 	"fmt"
@@ -12,9 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
-	"unsafe"
 )
 
 const (
@@ -79,8 +78,10 @@ func main() {
 	tTotal := time.Now()
 	flagProf := flag.String("prof", "", "write cpu profile to file")
 	flagTrace := flag.String("trace", "", "write trace to file")
-	flagN := flag.Int64("n", 1_000_000_000, "max n")
 
+	flagFile := flag.String("file", "../../data/measurements.txt", "1brc file")
+
+	flagPercent := flag.Int("percent", 100, "% of file to process [0, 100]")
 	flag.Parse()
 
 	if *flagTrace != "" {
@@ -98,14 +99,28 @@ func main() {
 		defer pprof.StopCPUProfile()
 	}
 
-	chanChanBlock := ReadFile(*flagN)
+	log.Println(*flagProf, *flagTrace, *flagFile, *flagPercent)
+	chanChanBlock := ReadFile(*flagFile, *flagPercent)
 	chanChanBatch := ParseBlocks(chanChanBlock)
 	chanOutput := MapData(chanChanBatch)
 
 	tMerge := time.Now()
-
-	output := MergeOutput(chanOutput)
+	output := make(OutputMap, MAP_SIZE)
+	for subOutput := range chanOutput {
+		if len(output) == 0 {
+			output = subOutput
+			continue
+		}
+		for k, v := range subOutput {
+			if v0, ok := output[k]; ok {
+				v0.Merge(v)
+			} else {
+				output[k] = v
+			}
+		}
+	}
 	since_tMerge = time.Since(tMerge)
+
 	since_tSort, since_tPrintPrep, since_tPrint = PrintOutput(output)
 
 	log.Printf(`
@@ -115,10 +130,10 @@ func main() {
 [ MapData: %v
   > Wait: %v
 ? Merge Maps: %v
-? Sorting Took: %v
+? Sorting: %v
 ? Print Prep: %v
 ? Printing: %v
-= Total Took: %v
+= Total: %v
 		 `,
 		since_tReadFile,
 		since_tParseBlock,
@@ -133,53 +148,20 @@ func main() {
 	)
 }
 
-func MergeOutput(chanOutput chan OutputMap) OutputMap {
-	output := make(OutputMap, MAP_SIZE)
-	for subOutput := range chanOutput {
-		if len(output) == 0 {
-			output = subOutput
-			continue
-		}
-
-		for k, v := range subOutput {
-			if v0, ok := output[k]; ok {
-				v0.Merge(v)
-			} else {
-				output[k] = v
-			}
-		}
-	}
-	return output
-}
-
-func ReadFile(flagN int64) (chanChanBlock chan chan []byte) {
+func ReadFile(file string, percent int) (chanChanBlock chan chan []byte) {
 	tReadFile := time.Now()
 	chanChanBlock = make(chan chan []byte, CHANS)
 	chanBlocks := [CHANS]chan []byte{}
 
 	go func() {
-		file, err := os.Open("../../data/measurements.txt")
+		data, size, err := pkg.MMapFile(file)
 		if err != nil {
 			panic(err)
 		}
 
-		fi, _ := file.Stat()
-		size := fi.Size()
-		low, high := uint32(size), uint32(size>>32)
-		fmap, err := syscall.CreateFileMapping(syscall.Handle(file.Fd()), nil, syscall.PAGE_READONLY, high, low, nil)
-		if err != nil {
-			panic(err)
-		}
-		defer syscall.CloseHandle(fmap)
-		ptr, err := syscall.MapViewOfFile(fmap, syscall.FILE_MAP_READ, 0, 0, uintptr(size))
-		if err != nil {
-			panic(err)
-		}
-
-		data := unsafe.Slice((*byte)(unsafe.Pointer(ptr)), size)
-
+		var limit int64 = int64(percent) * size / 100
 		var chanIndex int
-		for off := int64(0); off>>4 < flagN; {
+		for off := int64(0); off < limit; {
 			buf := data[off:min(size, off+READ_BUF)]
 			var n int
 			for n = len(buf) - 1; n >= 0; n-- {
@@ -206,6 +188,10 @@ func ReadFile(flagN int64) (chanChanBlock chan chan []byte) {
 		}
 
 		for i := range CHANS {
+			if chanBlocks[i] == nil {
+				chanBlocks[i] = make(chan []byte)
+				chanChanBlock <- chanBlocks[chanIndex]
+			}
 			close(chanBlocks[i])
 		}
 		close(chanChanBlock)
@@ -217,26 +203,8 @@ func ReadFile(flagN int64) (chanChanBlock chan chan []byte) {
 
 func SplitParse(line []byte) (key []byte, val int) {
 	semiColonIndex := bytes.IndexByte(line, ';')
-	dotIndex := bytes.IndexByte(line, '.')
 	key = line[:semiColonIndex]
-	neg := line[semiColonIndex+1] == '-'
-	startValIndex := semiColonIndex + 1
-	if neg {
-		startValIndex++
-	}
-
-	for i := startValIndex; i < dotIndex; i++ {
-		val = val*10 + int(line[i]-'0')
-	}
-
-	if dotIndex+1 < len(line) {
-		val = val*10 + int(line[dotIndex+1]-'0')
-	}
-
-	if neg {
-		val = -val
-	}
-
+	val = pkg.ParseIndec(line[semiColonIndex+1:])
 	return
 }
 
@@ -306,7 +274,13 @@ func MapData(chanChanBatch chan chan Batch) (chanOutput chan OutputMap) {
 						data, ok := output[kvp.Hash]
 
 						if !ok {
-							data = &CityData{kvp.Value, kvp.Value, kvp.Value, 1, kvp.Key}
+							data = &CityData{
+								kvp.Value,
+								kvp.Value,
+								kvp.Value,
+								1,
+								kvp.Key,
+							}
 							output[kvp.Hash] = data
 							continue
 						}
@@ -360,8 +334,8 @@ func PrintOutput(output OutputMap) (time.Duration, time.Duration, time.Duration)
 	var sb strings.Builder
 	for _, k := range names {
 		data := output[k.Hash]
-		fmt.Fprintf(&sb, "%s=%.1f/%.1f/%.1f\n", k.Key,
-			float64(data.Min)/10, float64(data.Sum)/float64(data.Count)/10, float64(data.Max)/10)
+		fmt.Fprintf(&sb, "%s=%s/%s/%s\n", k.Key,
+			pkg.PrintIndec(data.Min), pkg.PrintIndec(data.Sum/data.Count), pkg.PrintIndec(data.Max))
 	}
 	since_tPrintPrep := time.Since(tPrintPrep)
 

@@ -10,7 +10,7 @@ func (cd *CityData) Merge(other *CityData) {
 	if other == nil {
 		return
 	}
-
+	
 	cd.Min = min(cd.Min, other.Min)
 	cd.Max = max(cd.Max, other.Max)
 	cd.Sum += other.Sum

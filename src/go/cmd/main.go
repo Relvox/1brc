@@ -31,7 +31,7 @@ type HashKey = uint32
 
 type Batch = []pkg.KVP
 
-type OutputRoot = *pkg.TrieNode
+type OutputRoot = *pkg.Trie2Node
 
 var (
 	since_tReadFile   time.Duration
@@ -76,7 +76,7 @@ func main() {
 	chanOutput := MapData(chanChanBatch)
 
 	tMerge := time.Now()
-	output := pkg.MakeRoot()
+	output := pkg.MakeNode(0,nil)
 	for subOutput := range chanOutput {
 		if len(output.Children) == 0 {
 			output = subOutput
@@ -234,7 +234,7 @@ func MapData(chanChanBatch chan chan Batch) (chanOutput chan OutputRoot) {
 	go func() {
 		for chanBatch := range chanChanBatch {
 			go func() {
-				output := pkg.MakeRoot()
+				output := pkg.MakeNode(0, nil)
 				for kvps := range chanBatch {
 					for _, kvp := range kvps {
 						data := output.Get(kvp.Key)

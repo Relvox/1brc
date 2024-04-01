@@ -52,7 +52,7 @@ flame.%: $(PROF)/%.prof
 	start $(PROF)/$*.flame.svg
 
 report.%: flame.%
-	go tool pprof --trim=false -svg $(PROF)/$*.prof > $*.svg && \
+	go tool pprof --trim=false -svg $(PROF)/$*.prof > $(PROF)/$*.svg && \
 	start $(PROF)/$*.svg
 
 

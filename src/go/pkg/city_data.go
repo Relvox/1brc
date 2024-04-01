@@ -3,7 +3,7 @@ package pkg
 type CityData struct {
 	Min, Sum, Max int
 	Count         int
-	Name          []byte
+	// Name          []byte
 }
 
 func (cd *CityData) Merge(other *CityData) {

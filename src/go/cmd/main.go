@@ -9,7 +9,6 @@ import (
 	"os"
 	"runtime/pprof"
 	"runtime/trace"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -30,14 +29,9 @@ const (
 
 type HashKey = uint32
 
-type HK struct {
-	Hash HashKey
-	Key  []byte
-}
+type Batch = []pkg.KVP
 
-type Batch = []pkg.HKV
-
-type OutputMap = map[HashKey]*pkg.CityData
+type OutputRoot = *pkg.TrieNode
 
 var (
 	since_tReadFile   time.Duration
@@ -82,19 +76,21 @@ func main() {
 	chanOutput := MapData(chanChanBatch)
 
 	tMerge := time.Now()
-	output := make(OutputMap, MAP_SIZE)
+	output := pkg.MakeRoot()
 	for subOutput := range chanOutput {
-		if len(output) == 0 {
+		if len(output.Children) == 0 {
 			output = subOutput
 			continue
 		}
-		for k, v := range subOutput {
-			if v0, ok := output[k]; ok {
-				v0.Merge(v)
+		subOutput.Iter(nil, func(key []byte, value *pkg.CityData) {
+			if v0 := output.Get(key); v0 != nil {
+				v0.Merge(value)
 			} else {
-				output[k] = v
+				output.Insert(key, value)
 			}
-		}
+
+		})
+
 	}
 	since_tMerge = time.Since(tMerge)
 
@@ -178,9 +174,9 @@ func ReadFile(file string, percent int) (chanChanBlock chan chan []byte) {
 	return chanChanBlock
 }
 
-func ParseBlocks(chanChanBlock chan chan []byte) (chanChanBatch chan chan []pkg.HKV) {
+func ParseBlocks(chanChanBlock chan chan []byte) (chanChanBatch chan chan []pkg.KVP) {
 	tParseBlock := time.Now()
-	chanChanBatch = make(chan chan []pkg.HKV, CHANS)
+	chanChanBatch = make(chan chan []pkg.KVP, CHANS)
 
 	var wg sync.WaitGroup
 	wg.Add(CHANS)
@@ -189,7 +185,7 @@ func ParseBlocks(chanChanBlock chan chan []byte) (chanChanBatch chan chan []pkg.
 			go func() {
 				chanBatch := make(chan Batch, BATCH_CHAN_BUF)
 				chanChanBatch <- chanBatch
-				batch := make([]pkg.HKV, 0, HKV_BATCH)
+				batch := make([]pkg.KVP, 0, HKV_BATCH)
 				var key []byte
 				var val int
 				for block := range chanBlock {
@@ -201,7 +197,7 @@ func ParseBlocks(chanChanBlock chan chan []byte) (chanChanBatch chan chan []pkg.
 							key, val = pkg.SplitParse(block[:m])
 						}
 
-						batch = append(batch, pkg.HKV{pkg.Hash(key), key, val})
+						batch = append(batch, pkg.KVP{key, val})
 						if len(batch) >= HKV_BATCH {
 							chanBatch <- batch
 							batch = make(Batch, 0, HKV_BATCH)
@@ -230,26 +226,26 @@ func ParseBlocks(chanChanBlock chan chan []byte) (chanChanBatch chan chan []pkg.
 	return chanChanBatch
 }
 
-func MapData(chanChanBatch chan chan Batch) (chanOutput chan OutputMap) {
+func MapData(chanChanBatch chan chan Batch) (chanOutput chan OutputRoot) {
 	tMapData := time.Now()
-	chanOutput = make(chan OutputMap, MAP_CHAN_BUF)
+	chanOutput = make(chan OutputRoot, MAP_CHAN_BUF)
 	var wg sync.WaitGroup
 	wg.Add(CHANS)
 	go func() {
 		for chanBatch := range chanChanBatch {
 			go func() {
-				output := make(OutputMap, HKV_BATCH)
+				output := pkg.MakeRoot()
 				for kvps := range chanBatch {
 					for _, kvp := range kvps {
-						data, ok := output[kvp.Hash]
-						if !ok {
-							output[kvp.Hash] = &pkg.CityData{
-								kvp.Value,
-								kvp.Value,
-								kvp.Value,
-								1,
-								kvp.Key,
-							}
+						data := output.Get(kvp.Key)
+						if data == nil {
+							output.Insert(kvp.Key, &pkg.CityData{
+								Min:   kvp.Value,
+								Sum:   kvp.Value,
+								Max:   kvp.Value,
+								Count: 1,
+							})
+
 							continue
 						}
 
@@ -273,34 +269,14 @@ func MapData(chanChanBatch chan chan Batch) (chanOutput chan OutputMap) {
 	return chanOutput
 }
 
-func PrintOutput(output OutputMap) (time.Duration, time.Duration, time.Duration) {
-	tSort := time.Now()
-	names := make([]HK, 0, len(output))
-	for h, v := range output {
-		names = append(names, HK{h, v.Name})
-	}
-
-	sort.Slice(names, func(i, j int) bool {
-		ki, kj := names[i].Key, names[j].Key
-		for k := 0; k < len(ki) && k < len(kj); k++ {
-			if ki[k] != kj[k] {
-				return ki[k] < kj[k]
-			}
-		}
-		return len(ki) < len(kj)
-	})
-	since_tSort := time.Since(tSort)
-
-	tPrintPrep := time.Now()
-	var sb strings.Builder
-	for _, k := range names {
-		data := output[k.Hash]
-		fmt.Fprintf(&sb, "%s=%s/%s/%s\n", k.Key,
-			pkg.PrintIndec(data.Min), pkg.PrintIndec(data.Sum/data.Count), pkg.PrintIndec(data.Max))
-	}
-	since_tPrintPrep := time.Since(tPrintPrep)
+func PrintOutput(output OutputRoot) (time.Duration, time.Duration, time.Duration) {
 
 	tPrint := time.Now()
+	var sb strings.Builder
+	output.Iter(nil, func(key []byte, value *pkg.CityData) {
+		fmt.Fprintln(&sb, string(key), value)
+	})
+
 	os.Stdout.WriteString(sb.String())
 	since_tPrint := time.Since(tPrint)
 

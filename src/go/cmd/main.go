@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"flag"
 	"fmt"
-	"hash/fnv"
 	"log"
 	"os"
 	"runtime/pprof"
@@ -35,32 +34,10 @@ type HK struct {
 	Hash HashKey
 	Key  []byte
 }
-type HKV struct {
-	Hash  HashKey
-	Key   []byte
-	Value int
-}
 
-type Batch = []HKV
+type Batch = []pkg.HKV
 
-type OutputMap = map[HashKey]*CityData
-
-type CityData struct {
-	Min, Sum, Max int
-	Count         int
-	Name          []byte
-}
-
-func (cd *CityData) Merge(other *CityData) {
-	if other == nil {
-		return
-	}
-
-	cd.Min = min(cd.Min, other.Min)
-	cd.Max = max(cd.Max, other.Max)
-	cd.Sum += other.Sum
-	cd.Count += other.Count
-}
+type OutputMap = map[HashKey]*pkg.CityData
 
 var (
 	since_tReadFile   time.Duration
@@ -201,16 +178,9 @@ func ReadFile(file string, percent int) (chanChanBlock chan chan []byte) {
 	return chanChanBlock
 }
 
-func SplitParse(line []byte) (key []byte, val int) {
-	semiColonIndex := bytes.IndexByte(line, ';')
-	key = line[:semiColonIndex]
-	val = pkg.ParseIndec(line[semiColonIndex+1:])
-	return
-}
-
-func ParseBlocks(chanChanBlock chan chan []byte) (chanChanBatch chan chan []HKV) {
+func ParseBlocks(chanChanBlock chan chan []byte) (chanChanBatch chan chan []pkg.HKV) {
 	tParseBlock := time.Now()
-	chanChanBatch = make(chan chan []HKV, CHANS)
+	chanChanBatch = make(chan chan []pkg.HKV, CHANS)
 
 	var wg sync.WaitGroup
 	wg.Add(CHANS)
@@ -219,19 +189,19 @@ func ParseBlocks(chanChanBlock chan chan []byte) (chanChanBatch chan chan []HKV)
 			go func() {
 				chanBatch := make(chan Batch, BATCH_CHAN_BUF)
 				chanChanBatch <- chanBatch
-				batch := make([]HKV, 0, HKV_BATCH)
+				batch := make([]pkg.HKV, 0, HKV_BATCH)
 				var key []byte
 				var val int
 				for block := range chanBlock {
 					for {
 						m := bytes.IndexByte(block, 10)
 						if m < 0 {
-							key, val = SplitParse(block)
+							key, val = pkg.SplitParse(block)
 						} else {
-							key, val = SplitParse(block[:m])
+							key, val = pkg.SplitParse(block[:m])
 						}
 
-						batch = append(batch, HKV{Hash(key), key, val})
+						batch = append(batch, pkg.HKV{pkg.Hash(key), key, val})
 						if len(batch) >= HKV_BATCH {
 							chanBatch <- batch
 							batch = make(Batch, 0, HKV_BATCH)
@@ -272,27 +242,18 @@ func MapData(chanChanBatch chan chan Batch) (chanOutput chan OutputMap) {
 				for kvps := range chanBatch {
 					for _, kvp := range kvps {
 						data, ok := output[kvp.Hash]
-
 						if !ok {
-							data = &CityData{
+							output[kvp.Hash] = &pkg.CityData{
 								kvp.Value,
 								kvp.Value,
 								kvp.Value,
 								1,
 								kvp.Key,
 							}
-							output[kvp.Hash] = data
 							continue
 						}
 
-						if kvp.Value < data.Min {
-							data.Min = kvp.Value
-						}
-						if kvp.Value > data.Max {
-							data.Max = kvp.Value
-						}
-						data.Sum += kvp.Value
-						data.Count++
+						data.MergeValue(kvp.Value)
 					}
 				}
 
@@ -344,11 +305,4 @@ func PrintOutput(output OutputMap) (time.Duration, time.Duration, time.Duration)
 	since_tPrint := time.Since(tPrint)
 
 	return since_tSort, since_tPrintPrep, since_tPrint
-}
-
-func Hash(s []byte) HashKey {
-	h := fnv.New32a()
-	h.Write(s)
-	res := h.Sum32()
-	return res
 }

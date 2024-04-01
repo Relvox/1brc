@@ -50,22 +50,22 @@ func AddValue(cityStation *Station, v int) {
 }
 
 var (
-	since_tReadFile     time.Duration
-	since_tBaseStations time.Duration
-	since_tSort         time.Duration
+	Since_tReadFile     time.Duration
+	Since_tBaseStations time.Duration
+	Since_tSort         time.Duration
 
-	since_tBulk     time.Duration
-	since_tBulkPrep time.Duration
-	since_tBulkInit time.Duration
-	since_tBulkBulk time.Duration
+	Since_tBulk     time.Duration
+	Since_tBulkPrep time.Duration
+	Since_tBulkInit time.Duration
+	Since_tBulkBulk time.Duration
 
-	since_tErrAvg time.Duration
-	since_tErrSum time.Duration
-	since_tFill   time.Duration
+	Since_tErrAvg time.Duration
+	Since_tErrSum time.Duration
+	Since_tFill   time.Duration
 
-	since_tWriteCheck time.Duration
-	since_tDerange    time.Duration
-	since_tOutput     time.Duration
+	Since_tWriteCheck time.Duration
+	Since_tDerange    time.Duration
+	Since_tOutput     time.Duration
 )
 
 func main() {
@@ -114,7 +114,7 @@ func main() {
 	if err != nil {
 		panic(fmt.Errorf("csv read all: %w", err))
 	}
-	since_tReadFile = time.Since(tReadFile)
+	Since_tReadFile = time.Since(tReadFile)
 
 	tBaseStations := time.Now()
 	useCities := int(*flagN) / 10
@@ -134,12 +134,12 @@ func main() {
 
 		stationMap[name] = &Station{Target: int(value * 10)}
 	}
-	since_tBaseStations = time.Since(tBaseStations)
+	Since_tBaseStations = time.Since(tBaseStations)
 
 	tSort := time.Now()
 	cities := maps.Keys(stationMap)
 	sort.Strings(cities)
-	since_tSort = time.Since(tSort)
+	Since_tSort = time.Since(tSort)
 
 	tBulk := time.Now()
 	tBulkPrep := time.Now()
@@ -151,7 +151,7 @@ func main() {
 			fmt.Print("\rgeneration progress: ", len(lines))
 		}
 	}
-	since_tBulkPrep = time.Since(tBulkPrep)
+	Since_tBulkPrep = time.Since(tBulkPrep)
 
 	// initial 3
 	tBulkInit := time.Now()
@@ -165,7 +165,7 @@ func main() {
 			lines = append(lines, fmt.Sprintf("%s;%s", city, pkg.PrintIndec(v)))
 		}
 	}
-	since_tBulkInit = time.Since(tBulkInit)
+	Since_tBulkInit = time.Since(tBulkInit)
 
 	// bulk
 	tBulkBulk := time.Now()
@@ -189,8 +189,8 @@ func main() {
 		}
 		fmt.Println("")
 	}
-	since_tBulkBulk = time.Since(tBulkBulk)
-	since_tBulk = time.Since(tBulk)
+	Since_tBulkBulk = time.Since(tBulkBulk)
+	Since_tBulk = time.Since(tBulk)
 
 	tErrAvg := time.Now()
 	log.Printf("fixing avg errors from %d", len(lines))
@@ -217,7 +217,7 @@ func main() {
 		}
 	}
 	fmt.Println("")
-	since_tErrAvg = time.Since(tErrAvg)
+	Since_tErrAvg = time.Since(tErrAvg)
 
 	tErrSum := time.Now()
 	log.Printf("improving sum errors from %d", len(lines))
@@ -256,7 +256,7 @@ func main() {
 		}
 	}
 	fmt.Println("")
-	since_tErrSum = time.Since(tErrSum)
+	Since_tErrSum = time.Since(tErrSum)
 
 	tFill := time.Now()
 	log.Printf("filling up from %d to %d", len(lines), *flagN)
@@ -268,7 +268,7 @@ func main() {
 		reportGenProgress()
 	}
 	fmt.Println("")
-	since_tFill = time.Since(tFill)
+	Since_tFill = time.Since(tFill)
 
 	tWriteCheck := time.Now()
 	log.Printf("creating check file '%s'", *flagCheck)
@@ -292,7 +292,7 @@ func main() {
 	}
 	checkFile.Close()
 	fmt.Println("")
-	since_tWriteCheck = time.Since(tWriteCheck)
+	Since_tWriteCheck = time.Since(tWriteCheck)
 
 	if *flagFile != "" {
 		tDerange := time.Now()
@@ -307,7 +307,7 @@ func main() {
 				fmt.Printf("\rdone: %d%%", j/(int(*flagN/100)))
 			}
 		}
-		since_tDerange = time.Since(tDerange)
+		Since_tDerange = time.Since(tDerange)
 
 		tOutput := time.Now()
 		log.Printf("creating output file '%s'", *flagFile)
@@ -323,7 +323,7 @@ func main() {
 		}
 		outputFile.Close()
 		log.Printf("Test data build complete. wrote %d bytes in %d lines\n", n, len(lines))
-		since_tOutput = time.Since(tOutput)
+		Since_tOutput = time.Since(tOutput)
 	}
 
 	log.Printf(`
@@ -342,19 +342,19 @@ func main() {
 [ Output: %v
 = Total: %v
 			 `,
-		since_tReadFile,
-		since_tBaseStations,
-		since_tSort,
-		since_tBulk,
-		since_tBulkPrep,
-		since_tBulkInit,
-		since_tBulkBulk,
-		since_tErrAvg,
-		since_tErrSum,
-		since_tFill,
-		since_tWriteCheck,
-		since_tDerange,
-		since_tOutput,
+		Since_tReadFile,
+		Since_tBaseStations,
+		Since_tSort,
+		Since_tBulk,
+		Since_tBulkPrep,
+		Since_tBulkInit,
+		Since_tBulkBulk,
+		Since_tErrAvg,
+		Since_tErrSum,
+		Since_tFill,
+		Since_tWriteCheck,
+		Since_tDerange,
+		Since_tOutput,
 		time.Since(tTotal),
 	)
 }

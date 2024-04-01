@@ -16,12 +16,6 @@ FILE_MAIN=$(DATA)/measurements.txt
 FILE_CHECK=$(DATA)/measurements.chk
 FILE_GEN_INPUT=$(DATA)/weather_stations.csv
 
-$(FILE_CHECK): $(EXEC_GEN)
-	make gen ARGS_GEN='-file=""'
-
-$(FILE_OUT): $(EXEC_MAIN) main
-
-
 AND=""
 ARGS_GEN=""
 ARGS_MAIN=""
@@ -35,7 +29,7 @@ $(EXEC_GEN):
 
 # Main targets
 main: $(EXEC_MAIN) 
-	$< -prof=$(PROF)/main.prof $(ARGS_MAIN) $(AND) 1>$(FILE_OUT)
+	time $< -prof=$(PROF)/main.prof $(ARGS_MAIN) $(AND) 1>$(FILE_OUT)
 
 gen: $(EXEC_GEN) 
 	$< -prof=$(PROF)/gen.prof $(ARGS_GEN) $(AND)
@@ -52,12 +46,12 @@ flame.%: $(PROF)/%.prof
 	start $(PROF)/$*.flame.svg
 
 report.%: flame.%
-	go tool pprof --trim=false -svg $(PROF)/$*.prof > $*.svg && \
+	go tool pprof --trim=false -svg $(PROF)/$*.prof > $(PROF)/$*.svg && \
 	start $(PROF)/$*.svg
 
 
 flame: flame.gen flame.main
 report: report.gen report.main
 
-compare: $(FILE_CHECK) $(FILE_OUT) 
-	cmp $^
+compare:
+	cmp $(FILE_CHECK) $(FILE_OUT) 

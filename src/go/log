@@ -1,0 +1,21 @@
+2024/04/02 23:23:24 
+? Setup: 514.3µs
+[ Read: 9.6064ms
+  > Send: 0s
+[ Parse: 8.8331958s
+  > Send: 314.760972ms
+  > Wait: 8.8235894s
+[ MapData: 9.0791657s
+  > Send: 0s
+  > Wait: 245.9699ms
+! Merge: 126.6699ms
+  > Wait: 8.9554963s
+! Sort: 10.0235ms
+! Build: 25.5585ms
+! Print: 0s
+= Total: 9.1182625s
+	 
+
+real	0m12.050s
+user	0m0.000s
+sys	0m0.000s

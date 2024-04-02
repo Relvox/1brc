@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"runtime"
 	"runtime/pprof"
 	"runtime/trace"
 	"sort"
@@ -13,7 +14,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/klauspost/cpuid/v2"
 	"github.com/zeebo/xxh3"
 )
 
@@ -42,7 +42,7 @@ type OutputMap = map[HashKey]*CityData
 
 func main() {
 	t := &pkg.Timings{Start: time.Now()}
-	CHANS = cpuid.CPU.PhysicalCores - 1
+	CHANS = runtime.NumCPU() - 1
 	flagProf := flag.String("prof", "", "write cpu profile to file")
 	flagTrace := flag.String("trace", "", "write trace to file")
 

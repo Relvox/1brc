@@ -1,7 +1,9 @@
 package pkg
 
 import (
+	"fmt"
 	"log"
+	"sort"
 	"sync/atomic"
 	"time"
 )
@@ -20,6 +22,15 @@ func (a *AtomicDuration) Since(start time.Time) {
 
 func (a *AtomicDuration) Duration() time.Duration {
 	return time.Duration(atomic.LoadInt64((*int64)(a)))
+}
+
+type TEvent struct {
+	Time time.Time
+	Text string
+}
+
+func (e TEvent) String() string {
+	return fmt.Sprint(e.Time.UnixNano(), " ", e.Text)
 }
 
 type Timings struct {
@@ -48,6 +59,13 @@ type Timings struct {
 	Since_Sort      time.Duration
 	Since_Build     time.Duration
 	Since_Print     time.Duration
+
+	Events    []TEvent
+	ChanEvent chan TEvent
+}
+
+func (t *Timings) SendEvent(tNow time.Time, text string) {
+	t.ChanEvent <- TEvent{Time: tNow, Text: text}
 }
 
 const (
@@ -55,6 +73,22 @@ const (
 )
 
 func (t Timings) Report() {
+	close(t.ChanEvent)
+	for e := range t.ChanEvent {
+		t.Events = append(t.Events, e)
+	}
+	t.Events = append(t.Events, TEvent{time.Now(), "Done"})
+	sort.Slice(t.Events, func(i, j int) bool {
+		return t.Events[i].Time.Compare(t.Events[j].Time) < 0
+	})
+
+	start := t.Events[0].Time
+	for _, v := range t.Events {
+		log.Println(v.Time.Sub(start), v.Text)
+	}
+
+	Plot(t.Events)
+
 	log.Printf(`
 ? Setup: %v
 [ Read: %v
@@ -71,7 +105,7 @@ func (t Timings) Report() {
 ! Build: %v
 ! Print: %v
 = Total: %v
-	 `,
+		 `,
 		t.Since_Setup,
 
 		t.Since_ReadFile-t.Since_SendBlocks,
